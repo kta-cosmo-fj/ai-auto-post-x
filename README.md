@@ -1,6 +1,6 @@
 # 🤖✨ AI Tweet Auto-Poster
 
-> Gemini AIによる自動ツイート生成＆投稿システム with 重複検出
+> Gemini AI / OpenAI による自動ツイート生成＆投稿システム with 重複検出
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Vertex%20AI-4285F4.svg)](https://cloud.google.com/vertex-ai)
@@ -10,7 +10,7 @@
 
 このスクリプトは以下の機能を提供します：
 
-- **🤖 AI生成**: Google Vertex AI (Gemini) を使用して、テクノロジーに関する興味深いツイート内容を自動生成
+- **🤖 AI生成**: OpenAI GPT-4o-mini または Google Gemini による高品質なツイート文生成（自動切替対応）
 - **🚀 自動投稿**: X (Twitter) APIを通じて生成されたツイートを自動投稿
 - **🔍 重複検出**: 過去のツイートとの類似度をJaccard係数とSimHashで検出し、同じような内容の投稿を自動回避
 - **📝 ログ管理**: ローテーション機能付きのログファイルで実行履歴を記録
@@ -23,8 +23,8 @@
   - `tweepy` - X (Twitter) API クライアント
   - `vertexai` - Google Vertex AI SDK
   - `python-dotenv` - 環境変数管理
+- **AI API**: OpenAI API または Google Cloud Platform（Vertex AI）のいずれか（両方設定すれば自動切替）
 - **アカウント**:
-  - Google Cloud Platform アカウント（Vertex AI API有効化済み）
   - X (Twitter) Developer アカウント（API アクセス権限付き）
 
 ## 🚀 インストール方法
@@ -56,13 +56,48 @@ pip install tweepy google-cloud-aiplatform python-dotenv
 
 プロジェクトのルートディレクトリに`.env`ファイルを作成し、以下の環境変数を設定してください：
 
+**Option 1: OpenAI を使用する場合**
+
 ```env
-# Google Cloud Platform
-GOOGLE_CLOUD_PROJECT=your-gcp-project-id
-GOOGLE_APPLICATION_CREDENTIALS=/your/path/to/adc/application_default_credentials.json
-GOOGLE_CLOUD_LOCATION=global          # 任意。東京なら asia-northeast1
-GEMINI_MODEL=gemini-2.5-flash
-GOOGLE_GENAI_USE_VERTEXAI=True
+# OpenAI 設定
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-4o-mini  # または gpt-4o, gpt-3.5-turbo など
+
+# X (Twitter) API Credentials
+X_API_KEY=your-api-key
+X_API_SECRET=your-api-secret
+X_ACCESS_TOKEN=your-access-token
+X_ACCESS_TOKEN_SECRET=your-access-token-secret
+```
+
+**Option 2: Google Gemini を使用する場合**
+
+```env
+# Google Cloud / Gemini 設定
+GOOGLE_CLOUD_PROJECT=your_gcp_project_id
+GEMINI_MODEL=gemini-1.5-pro  # または gemini-1.5-flash など
+
+# X (Twitter) API Credentials
+X_API_KEY=your-api-key
+X_API_SECRET=your-api-secret
+X_ACCESS_TOKEN=your-access-token
+X_ACCESS_TOKEN_SECRET=your-access-token-secret
+```
+
+**Option 3: 両方設定して自動切替**
+
+```env
+# どちらも設定すると、PROVIDER_FLAG に応じて自動選択されます
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-4o-mini
+GOOGLE_CLOUD_PROJECT=your_gcp_project_id
+GEMINI_MODEL=gemini-1.5-pro
+
+# プロバイダー選択フラグ（オプション）
+# -1: 自動（OpenAI優先、ダメならGemini）（デフォルト）
+#  0: OpenAI優先（ダメならGemini）
+#  1: Gemini優先（ダメならOpenAI）
+PROVIDER_FLAG=-1
 
 # X (Twitter) API Credentials
 X_API_KEY=your-api-key
@@ -85,19 +120,20 @@ X_ACCESS_TOKEN_SECRET=your-access-token-secret
 | `X_ACCESS_TOKEN` | Twitter Access Token | `xxxxxxxxxxxxxxxxxxxx` |
 | `X_ACCESS_TOKEN_SECRET` | Twitter Access Token Secret | `xxxxxxxxxxxxxxxxxxxx` |
 
-### 3. Google Cloud Platform の認証設定
+### 3. AI API認証の設定
 
-Application Default Credentials (ADC) を設定してください：
+**OpenAI を使用する場合:**
+- `OPENAI_API_KEY`を設定するだけでOKです
+- APIキーは[OpenAI Platform](https://platform.openai.com/api-keys)で取得
 
-```bash
-gcloud auth application-default login
-```
-
-または、サービスアカウントキーを使用する場合：
-
-```bash
-set GOOGLE_APPLICATION_CREDENTIALS=path\to\your\service-account-key.json
-```
+**Google Gemini を使用する場合:**
+- Google Cloud SDK (`gcloud`) をインストール
+- 以下のコマンドで認証:
+  ```bash
+  gcloud auth application-default login
+  gcloud config set project YOUR_PROJECT_ID
+  ```
+- Vertex AI APIを有効化してください
 
 ### 4. X (Twitter) Developer Portal の設定
 
@@ -279,6 +315,18 @@ launchctl load ~/Library/LaunchAgents/com.user.twitter_ai.plist
 
 ## 🎨 カスタマイズ
 
+### AI プロバイダーの切り替え
+
+[`auto_post.py:48`](auto_post.py:48)で制御：
+
+```python
+# 環境変数 PROVIDER_FLAG で制御
+# -1: 自動（OpenAI → Gemini の順で試行）
+#  0: OpenAI 優先
+#  1: Gemini 優先
+PROVIDER_FLAG = int(os.getenv("PROVIDER_FLAG", "-1"))
+```
+
 ### プロンプトの変更
 
 [`auto_post.py:275-280`](auto_post.py:275)のプロンプトを編集：
@@ -427,19 +475,10 @@ tail -f logs/auto_post.log
 
 ### 費用について
 
-#### Google Cloud Platform (Vertex AI)
-
-- Gemini 1.5 Flash: 入力 $0.075 / 100万トークン、出力 $0.30 / 100万トークン
-- 1ツイート生成あたりの概算コスト: $0.001以下
-- 月間1000ツイート生成でも $1程度
-
-詳細は[Vertex AI料金ページ](https://cloud.google.com/vertex-ai/pricing)を参照してください。
-
-#### X (Twitter) API
-
-- Free tier: 無料
-- Basic tier: $100/月
-- Pro tier: $5000/月
+- **OpenAI API**: 従量課金制。GPT-4o-miniは1Mトークンあたり$0.15（入力）/$0.60（出力）程度
+- **Google Cloud Vertex AI**: 従量課金制。Gemini 1.5 Proは1Mトークンあたり$1.25（入力）/$5.00（出力）程度
+- **X API**: Free tierは月1,500ツイートまで無料、Basic ($100/月)、Pro ($5,000/月)
+- 定期実行の頻度に応じてコストを見積もってください
 
 ### セキュリティ
 

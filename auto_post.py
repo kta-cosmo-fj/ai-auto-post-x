@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# auto_post.py
+# auto_post.py (OpenAI / Gemini 自動切替版)
 import json
 import logging
 import os
@@ -9,30 +9,29 @@ import string
 from collections import Counter
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from typing import Iterable
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import tweepy
-import vertexai
 from dotenv import load_dotenv
-from vertexai.preview.generative_models import GenerativeModel
+# OpenAI クライアント
+from openai import OpenAI
 
-# .envファイルを読み込む
+# .env を読み込む
 load_dotenv()
-# ====== パス設定（必要に応じて変更） ======
+
+# ====== パス設定 ======
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 OUT_DIR = BASE_DIR / "out_auto"
 LOG_DIR = BASE_DIR / "logs_auto"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-MD_PATH = OUT_DIR / "tweets_preview.md"       # 追記されるMarkdown
-JSON_PATH = OUT_DIR / "tweets_payload.json"   # 常に最新で上書き
-LOG_PATH = LOG_DIR / "auto_post.log"  # ローテーションログ
+MD_PATH = OUT_DIR / "tweets_preview.md"
+JSON_PATH = OUT_DIR / "tweets_payload.json"
+LOG_PATH = LOG_DIR / "auto_post.log"
+INDEX_PATH = OUT_DIR / "dedup_index.json"
 
-# === Dedup additions ===
-INDEX_PATH = OUT_DIR / "dedup_index.json"  # 過去ツイートの軽量インデックス
-
-# ====== ログ設定（printは使わない） ======
+# ====== ログ設定 ======
 logger = logging.getLogger("auto_post")
 logger.setLevel(logging.INFO)
 handler = RotatingFileHandler(
@@ -44,13 +43,12 @@ formatter = logging.Formatter(
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-# （任意）タスクから手動実行時の可視性を上げたい場合はコメント解除
-# console = logging.StreamHandler()
-# console.setFormatter(formatter)
-# logger.addHandler(console)
+# ====== 生成バックエンド選択フラグ ======
+# 0 = OpenAI, 1 = Gemini, -1 = 自動（環境変数の有無で選択）
+PROVIDER_FLAG = int(os.getenv("PROVIDER_FLAG", "-1"))
 
+# ====== 共通ユーティリティ ======
 def sanitize_and_limit(text: str, limit: int = 140) -> str:
-    """改行や連続空白を畳み、文字数を上限に収める。"""
     if not text:
         return ""
     one_line = " ".join(text.split())
@@ -59,7 +57,12 @@ def sanitize_and_limit(text: str, limit: int = 140) -> str:
         one_line = one_line[:limit]
     return one_line
 
-def append_markdown_preview(text: str, hashtags: str | None, citations: list[str] | None, posted_url: str | None):
+def append_markdown_preview(
+    text: str,
+    hashtags: Optional[str],
+    citations: Optional[List[str]],
+    posted_url: Optional[str],
+):
     ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     with MD_PATH.open("a", encoding="utf-8") as f:
         f.write(f"\n\n# Tweet Preview ({ts})\n\n")
@@ -73,34 +76,29 @@ def append_markdown_preview(text: str, hashtags: str | None, citations: list[str
         if posted_url:
             f.write(f"Posted: {posted_url}\n")
 
-def save_payload_json(payload: dict):
+def save_payload_json(payload: Dict):
     with JSON_PATH.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-# === Dedup additions: 軽量重複検出ユーティリティ ===
+# === Dedup utilities ===
 _PUNCT_TABLE = str.maketrans(
     {c: " " for c in (string.punctuation + "’“”‘「」『』（）()[]{}")}
 )
 
-
 def normalize(text: str) -> str:
-    """記号を間引き、全角/半角や空白をならして比較用の正規化を行う。"""
     if not text:
         return ""
     t = text.strip().lower()
     t = re.sub(r"\s+", " ", t.translate(_PUNCT_TABLE))
     return t
 
-
-def char_ngrams(s: str, n: int = 2) -> set[str]:
-    """言語非依存の重複検出のための文字n-gram（デフォルト: 2-gram）。"""
-    s = s.replace(" ", "")  # 日本語向けに空白を除外
+def char_ngrams(s: str, n: int = 2) -> set:
+    s = s.replace(" ", "")
     if len(s) < n:
         return {s} if s else set()
     return {s[i : i + n] for i in range(len(s) - n + 1)}
 
-
-def jaccard(a: set[str], b: set[str]) -> float:
+def jaccard(a: set, b: set) -> float:
     if not a or not b:
         return 0.0
     inter = len(a & b)
@@ -110,11 +108,9 @@ def jaccard(a: set[str], b: set[str]) -> float:
 
 
 def simhash(tokens: Iterable[str]) -> int:
-    """シンプルな64bit SimHash。"""
-    # 各トークンのハッシュに基づき符号付き重みを積算
     v = [0] * 64
     for tok, cnt in Counter(tokens).items():
-        h = hash(tok) & ((1 << 64) - 1)  # 64bit
+        h = hash(tok) & ((1 << 64) - 1)
         w = cnt
         for i in range(64):
             if (h >> i) & 1:
@@ -131,8 +127,7 @@ def simhash(tokens: Iterable[str]) -> int:
 def hamming(a: int, b: int) -> int:
     return (a ^ b).bit_count()
 
-
-def load_existing_index() -> list[dict]:
+def load_existing_index() -> List[Dict]:
     if INDEX_PATH.exists():
         try:
             return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
@@ -142,17 +137,14 @@ def load_existing_index() -> list[dict]:
             )
     return []
 
-
-def extract_past_texts_from_md(max_items: int | None = None) -> list[str]:
-    """tweets_preview.md から本文行だけを抜く（見出しの次の非空行）。"""
+def extract_past_texts_from_md(max_items: Optional[int] = None) -> List[str]:
     if not MD_PATH.exists():
         return []
     lines = MD_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()
-    texts: list[str] = []
+    texts: List[str] = []
     i = 0
     while i < len(lines):
         if lines[i].startswith("# Tweet Preview"):
-            # 次の非空行を本文とする
             j = i + 1
             while j < len(lines) and not lines[j].strip():
                 j += 1
@@ -165,29 +157,23 @@ def extract_past_texts_from_md(max_items: int | None = None) -> list[str]:
             i += 1
     return texts
 
-
-def build_index_from_md() -> list[dict]:
-    """MDから再構築（初回 or 破損時）。"""
+def build_index_from_md() -> List[Dict]:
     texts = extract_past_texts_from_md()
-    index: list[dict] = []
+    index: List[Dict] = []
     for t in texts:
         norm = normalize(t)
         grams = char_ngrams(norm, 2)
-        sh = simhash(grams)
-        index.append({"norm": norm, "simhash": sh})
+        index.append({"norm": norm, "simhash": simhash(grams)})
     return index
 
-
-def persist_index(index: list[dict]) -> None:
+def persist_index(index: List[Dict]) -> None:
     INDEX_PATH.write_text(
         json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-
 def most_similar_info(
-    candidate: str, index: list[dict]
-) -> tuple[float, int, dict | None]:
-    """候補と既存で最も近いものの (jaccard, hamming, item) を返す。"""
+    candidate: str, index: List[Dict]
+) -> Tuple[float, int, Optional[Dict]]:
     norm = normalize(candidate)
     grams = char_ngrams(norm, 2)
     sh = simhash(grams)
@@ -195,25 +181,20 @@ def most_similar_info(
     for item in index:
         jac = jaccard(grams, char_ngrams(item["norm"], 2))
         ham = hamming(sh, int(item["simhash"]))
-        # 「似ている」度合いの総合指標として jaccard を優先
         if jac > best[0] or (jac == best[0] and ham < best[1]):
             best = (jac, ham, item)
     return best
 
-
-def extract_block_terms(similar_norms: list[str], top_k: int = 8) -> list[str]:
-    """似ていた文からよく出るトークンを抽出してNGワード化（短い文字n-gramベース）。"""
+def extract_block_terms(similar_norms: List[str], top_k: int = 8) -> List[str]:
     cnt = Counter()
     for n in similar_norms:
         for g in char_ngrams(n, 2):
             cnt[g] += 1
     return [w for w, _ in cnt.most_common(top_k)]
 
-
-def add_blocklist_to_prompt(prompt: str, block_terms: list[str]) -> str:
+def add_blocklist_to_prompt(prompt: str, block_terms: List[str]) -> str:
     if not block_terms:
         return prompt
-    # Geminiに渡すのは短い回避語のみ（トークン節約）
     return (
         prompt
         + "\n次の短い文字列（話題・表現）に被らない新規性のある内容で書いてください:\n"
@@ -221,42 +202,115 @@ def add_blocklist_to_prompt(prompt: str, block_terms: list[str]) -> str:
         + "\n"
     )
 
+# ====== 生成バックエンド実装 ======
+def generate_with_openai(base_prompt: str, model: str, api_key: str) -> str:
+    client = OpenAI(api_key=api_key)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "あなたはXの投稿を生成するAIエージェントです。出力は純テキストのみ。",
+            },
+            {"role": "user", "content": base_prompt},
+        ],
+        temperature=0.9,
+        max_tokens=200,
+    )
+    return (resp.choices[0].message.content or "").strip()
 
-# === /Dedup additions ===
+def generate_with_gemini(
+    base_prompt: str, project_id: str, model_name: str, location: str = "us-central1"
+) -> str:
+    # 使う時だけ import（環境に vertexai が無い場合でも他経路は動かすため）
+    try:
+        import vertexai
+        from vertexai.preview.generative_models import GenerativeModel
+    except Exception as e:
+        raise RuntimeError(f"Gemini ライブラリの読み込みに失敗しました: {e}")
+    vertexai.init(project=project_id, location=location)
+    model = GenerativeModel(model_name)
+    resp = model.generate_content(base_prompt)
+    return (getattr(resp, "text", "") or "").strip()
+
+def choose_provider() -> Tuple[str, Dict[str, str]]:
+    """
+    戻り値:
+      provider: "openai" or "gemini"
+      info:     使用モデルやキーなど（ログ/ペイロード用）
+    ルール:
+      - PROVIDER_FLAG == 0: OpenAI を優先。キー不足なら Gemini にフォールバック
+      - PROVIDER_FLAG == 1: Gemini を優先。設定不足なら OpenAI にフォールバック
+      - PROVIDER_FLAG それ以外（例: -1）: 自動（OpenAI → Gemini の順で利用可否を判定）
+    """
+    # OpenAI 側の設定
+    openai_api_key = os.getenv("OPENAI_API_KEY") or ""
+    openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    openai_ready = bool(openai_api_key)
+
+    # Gemini 側の設定
+    gcp_project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT_ID") or ""
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+    gemini_ready = bool(gcp_project and gemini_model)
+
+    # 優先度決定
+    pref = PROVIDER_FLAG
+    order: List[str]
+    if pref == 0:
+        order = ["openai", "gemini"]
+    elif pref == 1:
+        order = ["gemini", "openai"]
+    else:
+        order = ["openai", "gemini"]  # 自動: OpenAI を先に試す
+
+    for p in order:
+        if p == "openai" and openai_ready:
+            return "openai", {"model": openai_model, "OPENAI_API_KEY": openai_api_key}
+        if p == "gemini" and gemini_ready:
+            return "gemini", {
+                "model": gemini_model,
+                "GOOGLE_CLOUD_PROJECT": gcp_project,
+            }
+
+    # どちらも不可
+    missing_list = []
+    if not openai_ready:
+        missing_list.append("OPENAI_API_KEY")
+    if not gemini_ready:
+        missing_list.append("GOOGLE_CLOUD_PROJECT or GEMINI_MODEL")
+    raise RuntimeError(
+        "どの生成APIも利用可能ではありません。不足: " + ", ".join(missing_list)
+    )
 
 
 def main():
-    # === 環境変数 ===
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-    location = "us-central1"
-    gemini_model = os.getenv("GEMINI_MODEL")
-
+    # === X(Twitter) 認証情報 ===
     x_api_key = os.getenv("X_API_KEY")
     x_api_secret = os.getenv("X_API_SECRET")
     x_access_token = os.getenv("X_ACCESS_TOKEN")
     x_access_token_secret = os.getenv("X_ACCESS_TOKEN_SECRET")
 
-    # === 入力バリデーション ===
-    missing = [k for k, v in {
-        "GCP_PROJECT_ID": project_id,
-        "GEMINI_MODEL": gemini_model,
-        "X_API_KEY": x_api_key,
-        "X_API_SECRET": x_api_secret,
-        "X_ACCESS_TOKEN": x_access_token,
-        "X_ACCESS_TOKEN_SECRET": x_access_token_secret,
-    }.items() if not v]
-    if missing:
-        logger.error("Missing env vars: %s", ", ".join(missing))
-        return 2  # 異常終了コード
+    missing_x = [
+        k
+        for k, v in {
+            "X_API_KEY": x_api_key,
+            "X_API_SECRET": x_api_secret,
+            "X_ACCESS_TOKEN": x_access_token,
+            "X_ACCESS_TOKEN_SECRET": x_access_token_secret,
+        }.items()
+        if not v
+    ]
+    if missing_x:
+        logger.error("Missing env vars for X: %s", ", ".join(missing_x))
+        return 2
 
-    # === Dedup: 既存インデックスのロード or 再構築 ===
+    # === Dedup index 準備 ===
     index = load_existing_index()
     if not index:
         index = build_index_from_md()
         persist_index(index)
         logger.info("Dedup index initialized from MD. %d items.", len(index))
     else:
-        # 追加分があればMDから追補（安全側）
         md_texts = {normalize(t) for t in extract_past_texts_from_md()}
         known = {i["norm"] for i in index}
         new_norms = list(md_texts - known)
@@ -267,24 +321,21 @@ def main():
             persist_index(index)
             logger.info("Dedup index updated from MD (+%d).", len(new_norms))
 
-    # === Vertex AI 初期化 & 生成 ===
+    # === 生成 ===
     try:
-        vertexai.init(project=project_id, location=location)
-        model = GenerativeModel(gemini_model)
-
+        provider, info = choose_provider()
         base_prompt = (
-            "あなたはXの投稿を生成するAIエージェントです。\n"
             "140文字以内でテクノロジーに関する興味深い事実を投稿してください。\n"
             "冒頭にスクロールを止めるようなフックを入れてください。\n"
             "絵文字は控えめに、具体性と独自性を重視してください。\n"
         )
 
-        # === Dedup: 生成→類似チェック→必要なら回避語を付与して再生成 ===
         MAX_ATTEMPTS = 5
-        JACCARD_TH = 0.80  # これ以上は「被り」
-        HAMMING_TH = 3  # SimHashが近い（重複）とみなす距離
-        block_terms: list[str] = []
-        chosen_text = None
+        JACCARD_TH = 0.80
+        HAMMING_TH = 3
+        block_terms: List[str] = []
+        chosen_text = ""
+        last_text = ""
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             prompt = (
@@ -292,31 +343,33 @@ def main():
                 if block_terms
                 else base_prompt
             )
-            resp = model.generate_content(prompt)
-            raw_text = (resp.text or "").strip()
-            text = sanitize_and_limit(raw_text, 140)
 
-            jac, ham, nearest = most_similar_info(text, index)
-            logger.info("Attempt %d: similarity jac=%.3f ham=%d", attempt, jac, ham)
+            if provider == "openai":
+                raw = generate_with_openai(
+                    prompt, info["model"], info["OPENAI_API_KEY"]
+                )
+            else:
+                raw = generate_with_gemini(
+                    prompt, info["GOOGLE_CLOUD_PROJECT"], info["model"]
+                )
+
+            last_text = sanitize_and_limit(raw, 140)
+
+            jac, ham, nearest = most_similar_info(last_text, index)
+            logger.info("Attempt %d [%s]: jac=%.3f ham=%d", attempt, provider, jac, ham)
 
             if jac < JACCARD_TH and ham > HAMMING_TH:
-                chosen_text = text
+                chosen_text = last_text
                 break
 
-            # 類似が高い → NGワードを刷新して再試行（過去全文は渡さない）
             sims = []
             if nearest:
                 sims.append(nearest["norm"])
-            # 余裕があれば他の上位近傍も拾いたいが、コスト/単純さ重視で1件で十分
             block_terms = extract_block_terms(sims, top_k=8)
 
         if not chosen_text:
-            # どうしても被る場合は最後の案を採用しつつ、末尾に微修正（語彙の置換）で被りを緩和
-            logger.warning(
-                "Could not find a sufficiently novel tweet; applying light mutation."
-            )
-            norm = normalize(text)
-            # ごく簡単な言い換え（英数字・一般語）
+            logger.warning("Novel candidate not found; applying light mutation.")
+            text = last_text or ""
             replacements = {
                 "ai": "生成系AI",
                 "data": "データ",
@@ -329,13 +382,13 @@ def main():
                 mutated = re.sub(rf"\b{k}\b", v, mutated, flags=re.IGNORECASE)
             chosen_text = sanitize_and_limit(mutated, 140)
 
-        hashtags = None  # 例: "#AI #Tech"
-        citations: list[str] = []  # 例: ["https://example.com/source1"]
+        hashtags = None
+        citations: List[str] = []
 
-        # 送信前プレビューの保存（Markdown追記 & JSON上書き）
         payload = {
             "text": chosen_text,
-            "model": gemini_model,
+            "provider": provider,
+            "model": info["model"],
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "citations": citations,
             "hashtags": hashtags,
@@ -343,7 +396,12 @@ def main():
         append_markdown_preview(chosen_text, hashtags, citations, posted_url=None)
         save_payload_json(payload)
 
-        logger.info("Prepared tweet text (%d chars).", len(chosen_text))
+        logger.info(
+            "Prepared tweet text (%d chars) via %s/%s.",
+            len(chosen_text),
+            provider,
+            info["model"],
+        )
 
     except Exception as e:
         logger.exception("Content generation failed: %s", e)
@@ -361,20 +419,19 @@ def main():
         tweet_id = res.data.get("id")
         tweet_url = f"https://x.com/i/web/status/{tweet_id}" if tweet_id else None
 
-        # 投稿結果をMarkdownに追記、payloadも更新
         payload["posted_at"] = datetime.now(timezone.utc).isoformat()
         payload["tweet_id"] = tweet_id
         payload["tweet_url"] = tweet_url
         save_payload_json(payload)
+        append_markdown_preview(chosen_text, hashtags, citations, posted_url=tweet_url)
 
         logger.info("Tweet posted: %s", tweet_url)
 
-        # === Dedup: 新規投稿をインデックスへ反映 ===
+        # Dedup 反映
         try:
             norm = normalize(chosen_text)
             grams = char_ngrams(norm, 2)
-            new_item = {"norm": norm, "simhash": simhash(grams)}
-            index.append(new_item)
+            index.append({"norm": norm, "simhash": simhash(grams)})
             persist_index(index)
             logger.info("Dedup index appended (+1).")
         except Exception as e:
@@ -388,5 +445,4 @@ def main():
 
 if __name__ == "__main__":
     exit_code = main()
-    # タスクスケジューラ用に終了コードを明示
     raise SystemExit(exit_code)
