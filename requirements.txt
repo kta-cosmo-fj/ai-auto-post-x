@@ -1,0 +1,8 @@
+# Twitter API client
+tweepy>=4.14.0
+
+# Google Cloud Vertex AI
+google-cloud-aiplatform>=1.38.0
+
+# Environment variable management
+python-dotenv>=1.0.0
