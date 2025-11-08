@@ -59,7 +59,10 @@ pip install tweepy google-cloud-aiplatform python-dotenv
 ```env
 # Google Cloud Platform
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
-GEMINI_MODEL=gemini-1.5-flash-002
+GOOGLE_APPLICATION_CREDENTIALS=/your/path/to/adc/application_default_credentials.json
+GOOGLE_CLOUD_LOCATION=global          # 任意。東京なら asia-northeast1
+GEMINI_MODEL=gemini-2.5-flash
+GOOGLE_GENAI_USE_VERTEXAI=True
 
 # X (Twitter) API Credentials
 X_API_KEY=your-api-key
