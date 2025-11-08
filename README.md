@@ -1,17 +1,22 @@
-# auto_post.py
+# 🤖✨ AI Tweet Auto-Poster
 
-Gemini AIを使用してツイート内容を自動生成し、X (Twitter) APIを通じて投稿するPythonスクリプトです。
+> Gemini AIによる自動ツイート生成＆投稿システム with 重複検出
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Vertex%20AI-4285F4.svg)](https://cloud.google.com/vertex-ai)
+[![X API](https://img.shields.io/badge/X%20API-v2-000000.svg)](https://developer.x.com/)
 
 ## 概要
 
 このスクリプトは以下の機能を提供します：
 
-- **AI生成**: Google Vertex AI (Gemini) を使用して、テクノロジーに関する興味深いツイート内容を自動生成
-- **自動投稿**: X (Twitter) APIを通じて生成されたツイートを自動投稿
-- **ログ管理**: ローテーション機能付きのログファイルで実行履歴を記録
-- **プレビュー保存**: 投稿内容をMarkdownとJSONの両形式で保存
+- **🤖 AI生成**: Google Vertex AI (Gemini) を使用して、テクノロジーに関する興味深いツイート内容を自動生成
+- **🚀 自動投稿**: X (Twitter) APIを通じて生成されたツイートを自動投稿
+- **🔍 重複検出**: 過去のツイートとの類似度をJaccard係数とSimHashで検出し、同じような内容の投稿を自動回避
+- **📝 ログ管理**: ローテーション機能付きのログファイルで実行履歴を記録
+- **💾 プレビュー保存**: 投稿内容をMarkdownとJSONの両形式で保存
 
-## 必要な環境
+## 📋 必要な環境
 
 - **Python**: 3.10以上
 - **ライブラリ**:
@@ -22,7 +27,7 @@ Gemini AIを使用してツイート内容を自動生成し、X (Twitter) API�
   - Google Cloud Platform アカウント（Vertex AI API有効化済み）
   - X (Twitter) Developer アカウント（API アクセス権限付き）
 
-## インストール方法
+## 🚀 インストール方法
 
 ### 1. リポジトリのクローン
 
@@ -45,7 +50,7 @@ uv sync
 pip install tweepy google-cloud-aiplatform python-dotenv
 ```
 
-## 環境設定
+## ⚙️ 環境設定
 
 ### 1. `.env`ファイルの作成
 
@@ -98,7 +103,7 @@ set GOOGLE_APPLICATION_CREDENTIALS=path\to\your\service-account-key.json
 3. API KeysとAccess Tokensを取得
 4. App permissionsを「Read and Write」に設定
 
-## 使い方
+## 💻 使い方
 
 ### 基本的な実行方法
 
@@ -145,7 +150,21 @@ Posted: https://x.com/i/web/status/1234567890
 }
 ```
 
-#### `logs/auto_post.log`
+#### `out_auto/dedup_index.json`
+重複検出用のインデックスファイル（過去のツイートの軽量インデックス）：
+
+```json
+[
+  {
+    "norm": "あなたはxの投稿を生成するaiエージェントです",
+    "simhash": 1234567890123456789
+  }
+]
+```
+
+このファイルには過去のツイートの正規化されたテキストとSimHashハッシュ値が保存され、新しいツイート生成時に類似度判定に使用されます。
+
+#### `logs_auto/auto_post.log`
 実行ログをローテーション保存（最大1MB、5世代保持）：
 
 ```
@@ -153,7 +172,7 @@ Posted: https://x.com/i/web/status/1234567890
 2025-01-08 09:30:05 [INFO] Tweet posted: https://x.com/i/web/status/1234567890
 ```
 
-## 定期実行の設定
+## ⏰ 定期実行の設定
 
 ### Windows（タスクスケジューラ）
 
@@ -255,31 +274,49 @@ crontab -e
 launchctl load ~/Library/LaunchAgents/com.user.twitter_ai.plist
 ```
 
-## カスタマイズ
+## 🎨 カスタマイズ
 
 ### プロンプトの変更
 
-[`auto_post.py:102-106`](auto_post.py:102)のプロンプトを編集：
+[`auto_post.py:275-280`](auto_post.py:275)のプロンプトを編集：
 
 ```python
-prompt = (
+base_prompt = (
     "あなたはXの投稿を生成するAIエージェントです。\n"
     "140文字以内でテクノロジーに関する興味深い事実を投稿してください。\n"
     "冒頭にスクロールを止めるようなフックを入れてください。\n"
+    "絵文字は控えめに、具体性と独自性を重視してください。\n"
 )
 ```
 
 ### 文字数制限の調整
 
-[`auto_post.py:109`](auto_post.py:109)の`sanitize_and_limit()`の第2引数を変更：
+[`auto_post.py:297`](auto_post.py:297)の`sanitize_and_limit()`の第2引数を変更：
 
 ```python
 text = sanitize_and_limit(raw_text, 280)  # 280文字に変更
 ```
 
+### 重複検出の調整
+
+[`auto_post.py:284-285`](auto_post.py:284)で閾値を変更：
+
+```python
+JACCARD_TH = 0.80  # Jaccard係数の閾値（0.0-1.0、高いほど厳格）
+HAMMING_TH = 3     # SimHashハミング距離の閾値（小さいほど厳格）
+```
+
+**パラメータの意味：**
+- `JACCARD_TH`: 文字n-gramの重複率（0.80 = 80%以上一致で重複と判定）
+- `HAMMING_TH`: SimHashのビット差分（3以下で類似と判定）
+
+**調整例：**
+- より厳格にする: `JACCARD_TH = 0.70`, `HAMMING_TH = 5`
+- より緩くする: `JACCARD_TH = 0.90`, `HAMMING_TH = 2`
+
 ### ハッシュタグや出典URLの追加
 
-[`auto_post.py:112-113`](auto_post.py:112)を編集：
+[`auto_post.py:332-333`](auto_post.py:332)を編集：
 
 ```python
 hashtags = "#AI #Tech #Innovation"
@@ -291,7 +328,7 @@ citations = [
 
 ### パス設定の変更
 
-[`auto_post.py:18-20`](auto_post.py:18)を編集：
+[`auto_post.py:22-24`](auto_post.py:22)を編集：
 
 ```python
 BASE_DIR = pathlib.Path(r"C:\path\to\twitter_ai")
@@ -299,7 +336,7 @@ OUT_DIR = BASE_DIR / "output"  # 出力ディレクトリ名を変更
 LOG_DIR = BASE_DIR / "logs"
 ```
 
-## トラブルシューティング
+## 🔧 トラブルシューティング
 
 ### よくあるエラーと対処法
 
@@ -375,7 +412,7 @@ tail -f logs/auto_post.log
 
 タスクスケジューラでこれらのコードを使用して、エラー時の通知や再試行を設定できます。
 
-## 注意事項
+## ⚠️ 注意事項
 
 ### Twitter APIの利用制限
 
