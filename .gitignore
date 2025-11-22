@@ -74,3 +74,13 @@ data/*.json
 
 # Reports
 reports/
+# Database files
+data/*.db
+data/*.db-journal
+# Knowledge Base / RAG
+data/chroma_db/
+.chroma/
+
+# Sentence Transformers cache
+~/.cache/torch/
+~/.cache/huggingface/
