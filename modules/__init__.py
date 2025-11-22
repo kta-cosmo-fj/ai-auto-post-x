@@ -1,3 +1,1 @@
-"""
-AI Auto Post X - Modules Package
-"""
+"""AI Auto Post X - Modules Package"""

@@ -1,6 +1,4 @@
-"""
-Knowledge Base のユニットテスト
-"""
+"""Knowledge Base のユニットテスト"""
 
 import os
 import sys

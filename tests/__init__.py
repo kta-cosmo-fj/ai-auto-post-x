@@ -1,3 +1,1 @@
-"""
-AI Auto Post X - Tests Package
-"""
+"""AI Auto Post X - Tests Package"""
