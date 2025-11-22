@@ -67,3 +67,7 @@ htmlcov/
 assets/backgrounds/*.jpg
 assets/backgrounds/*.png
 /temp_images/
+
+# Database files
+data/*.db
+data/*.db-journal
