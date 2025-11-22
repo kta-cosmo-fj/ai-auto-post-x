@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import tweepy
+
 from modules.db_manager import DBManager
 from modules.feedback_collector import FeedbackCollector
 
@@ -158,9 +160,10 @@ class TestFeedbackCollector(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.temp_dir, "test_tweets.db")
 
-        # 環境変数をモック
+        # 環境変数をモック（Bearer Token + User ID）
         self.env_patcher = patch.dict(os.environ, {
             'X_BEARER_TOKEN': 'test_bearer_token',
+            'X_USER_ID': '12345',
         })
         self.env_patcher.start()
 
@@ -175,12 +178,9 @@ class TestFeedbackCollector(unittest.TestCase):
 
     @patch('modules.feedback_collector.tweepy.Client')
     def test_initialization(self, mock_client_class):
-        """FeedbackCollectorの初期化テスト"""
+        """FeedbackCollectorの初期化テスト（Bearer Token + X_USER_ID）"""
         # モッククライアントの設定
         mock_client = MagicMock()
-        mock_user = Mock()
-        mock_user.data.id = '12345'
-        mock_client.get_me.return_value = mock_user
         mock_client_class.return_value = mock_client
 
         # FeedbackCollectorを初期化
@@ -188,16 +188,41 @@ class TestFeedbackCollector(unittest.TestCase):
 
         # クライアントが正しく初期化されたか確認
         mock_client_class.assert_called_once()
+        # Bearer Token + X_USER_IDの場合、環境変数からuser_idを取得
         self.assertEqual(collector.user_id, '12345')
+        # get_me()は呼ばれないはず
+        mock_client.get_me.assert_not_called()
+
+    @patch('modules.feedback_collector.tweepy.Client')
+    def test_initialization_oauth(self, mock_client_class):
+        """FeedbackCollectorの初期化テスト（OAuth 1.0a）"""
+        # OAuth 1.0aの環境変数を設定
+        with patch.dict(os.environ, {
+            'X_API_KEY': 'test_api_key',
+            'X_API_SECRET': 'test_api_secret',
+            'X_ACCESS_TOKEN': 'test_access_token',
+            'X_ACCESS_TOKEN_SECRET': 'test_access_token_secret',
+        }, clear=True):
+            # モッククライアントの設定
+            mock_client = MagicMock()
+            mock_user = Mock()
+            mock_user.data.id = '67890'
+            mock_client.get_me.return_value = mock_user
+            mock_client_class.return_value = mock_client
+
+            # FeedbackCollectorを初期化
+            collector = FeedbackCollector(self.db_path)
+
+            # OAuth 1.0aの場合、APIからuser_idを取得
+            self.assertEqual(collector.user_id, '67890')
+            # get_me()が呼ばれているはず
+            mock_client.get_me.assert_called_once()
 
     @patch('modules.feedback_collector.tweepy.Client')
     def test_collect_recent_tweets(self, mock_client_class):
         """最近のツイート収集テスト"""
         # モッククライアントの設定
         mock_client = MagicMock()
-        mock_user = Mock()
-        mock_user.data.id = '12345'
-        mock_client.get_me.return_value = mock_user
 
         # モックツイートデータ
         mock_tweet = Mock()
@@ -239,9 +264,6 @@ class TestFeedbackCollector(unittest.TestCase):
         """ツイートエンゲージメント収集テスト"""
         # モッククライアントの設定
         mock_client = MagicMock()
-        mock_user = Mock()
-        mock_user.data.id = '12345'
-        mock_client.get_me.return_value = mock_user
 
         # モックツイートデータ
         mock_tweet = Mock()
@@ -278,34 +300,47 @@ class TestFeedbackCollector(unittest.TestCase):
         self.assertEqual(history[0]['likes'], 15)
 
     @patch('modules.feedback_collector.tweepy.Client')
-    def test_rate_limit_handling(self, mock_client_class):
+    @patch('modules.feedback_collector.time.sleep')
+    def test_rate_limit_handling(self, mock_sleep, mock_client_class):
         """レート制限処理のテスト"""
         # モッククライアントの設定
         mock_client = MagicMock()
-        mock_user = Mock()
-        mock_user.data.id = '12345'
-        mock_client.get_me.return_value = mock_user
 
-        # 最初はレート制限エラー、2回目は成功
-        mock_client.get_tweet.side_effect = [
-            tweepy.TooManyRequests("Rate limit exceeded", response=Mock(status_code=429)),
-            Mock(data=Mock(
-                id='123',
-                text='Test',
-                created_at=datetime.now(timezone.utc),
-                public_metrics={'like_count': 0, 'retweet_count': 0, 'reply_count': 0, 'impression_count': 0}
-            ))
-        ]
+        # カスタム例外クラスを作成（tweepy.TooManyRequestsのモック）
+        class MockRateLimitError(Exception):
+            """レート制限エラーのモック"""
+            pass
 
+        # 1回目はエラー、2回目は成功
+        call_count = [0]
+        def mock_get_tweet(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # 1回目はレート制限エラー（tweepy.TooManyRequestsの代わり）
+                raise MockRateLimitError("Rate limit exceeded")
+            else:
+                # 2回目は成功
+                return Mock(data=Mock(
+                    id='123',
+                    text='Test',
+                    created_at=datetime.now(timezone.utc),
+                    public_metrics={'like_count': 0, 'retweet_count': 0, 'reply_count': 0, 'impression_count': 0}
+                ))
+
+        mock_client.get_tweet = mock_get_tweet
         mock_client_class.return_value = mock_client
 
         # FeedbackCollectorを初期化
         collector = FeedbackCollector(self.db_path)
 
-        # リトライ処理をテスト（time.sleepをモック）
-        with patch('time.sleep'):
+        # tweepy.TooManyRequestsをMockRateLimitErrorに置き換え
+        with patch('modules.feedback_collector.tweepy.TooManyRequests', MockRateLimitError):
             result = collector.collect_tweet_engagement('123')
             self.assertIsNotNone(result)
+            # 2回呼ばれているはず（1回目失敗、2回目成功）
+            self.assertEqual(call_count[0], 2)
+            # sleepが1回呼ばれているはず（リトライ時）
+            self.assertEqual(mock_sleep.call_count, 1)
 
 
 def run_tests():

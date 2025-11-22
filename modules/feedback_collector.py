@@ -44,11 +44,15 @@ class FeedbackCollector:
         access_token = os.getenv("X_ACCESS_TOKEN")
         access_token_secret = os.getenv("X_ACCESS_TOKEN_SECRET")
 
-        # Bearer Tokenを優先、なければOAuth 1.0a
-        if bearer_token:
-            self.client = tweepy.Client(bearer_token=bearer_token)
-            logger.info("Initialized Twitter API v2 client with Bearer Token")
-        elif all([api_key, api_secret, access_token, access_token_secret]):
+        # ユーザーIDの取得（環境変数または後でAPIから取得）
+        user_id_from_env = os.getenv("X_USER_ID")
+
+        # OAuth 1.0aの認証情報が揃っている場合（ユーザーコンテキストあり）
+        has_oauth = all([api_key, api_secret, access_token, access_token_secret])
+
+        # クライアントの初期化
+        if has_oauth:
+            # OAuth 1.0aを使用（ユーザーコンテキストあり、get_me()が使える）
             self.client = tweepy.Client(
                 consumer_key=api_key,
                 consumer_secret=api_secret,
@@ -56,23 +60,44 @@ class FeedbackCollector:
                 access_token_secret=access_token_secret,
             )
             logger.info("Initialized Twitter API v2 client with OAuth 1.0a")
+        elif bearer_token:
+            # Bearer Tokenのみ（アプリのみ認証、get_me()は使えない）
+            self.client = tweepy.Client(bearer_token=bearer_token)
+            logger.info("Initialized Twitter API v2 client with Bearer Token")
         else:
             raise ValueError(
                 "Twitter API credentials not found. "
-                "Set X_BEARER_TOKEN or (X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET)"
+                "Set (X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET) "
+                "or X_BEARER_TOKEN"
             )
 
-        # 自分のユーザーIDを取得
-        try:
-            me = self.client.get_me()
-            if me and me.data:
-                self.user_id = me.data.id
-                logger.info(f"Authenticated as user ID: {self.user_id}")
-            else:
-                raise ValueError("Failed to get user information")
-        except Exception as e:
-            logger.error(f"Failed to authenticate: {e}")
-            raise
+        # ユーザーIDを取得
+        if user_id_from_env:
+            # 環境変数から取得（Bearer Token使用時に推奨）
+            self.user_id = user_id_from_env
+            logger.info(f"Using user ID from environment: {self.user_id}")
+        elif has_oauth:
+            # OAuth 1.0aの場合はAPIから取得可能
+            try:
+                me = self.client.get_me()
+                if me and me.data:
+                    self.user_id = me.data.id
+                    logger.info(f"Authenticated as user ID: {self.user_id}")
+                else:
+                    raise ValueError("Failed to get user information from API")
+            except Exception as e:
+                logger.error(f"Failed to get user ID from API: {e}")
+                raise ValueError(
+                    "Failed to get user ID from API. "
+                    "Please set X_USER_ID in your .env file"
+                ) from e
+        else:
+            # Bearer TokenのみでユーザーIDが指定されていない場合
+            raise ValueError(
+                "X_USER_ID is required when using Bearer Token authentication. "
+                "Get your user ID from https://tweeterid.com/ or your Twitter profile, "
+                "and set it in your .env file as X_USER_ID=your_user_id_here"
+            )
 
     def _handle_rate_limit(self, func, *args, max_retries: int = 3, **kwargs):
         """

@@ -27,12 +27,18 @@ pip install -r requirements.txt
 `.env` ファイルに以下の環境変数を追加してください：
 
 ```bash
-# Twitter API v2 認証情報（いずれかが必要）
+# Twitter API v2 認証情報
 
-# オプション1: Bearer Token（推奨 - v2 API専用）
+# あなたのTwitterユーザーID（Bearer Token使用時は必須）
+# 取得方法: https://tweeterid.com/ でユーザー名を入力
+X_USER_ID=your_twitter_user_id_here
+
+# オプション1: Bearer Token（アプリのみ認証）
+# 注意: Bearer Token使用時は上記のX_USER_IDが必須です
 X_BEARER_TOKEN=your_bearer_token_here
 
-# オプション2: OAuth 1.0a 認証情報（既存の認証情報を使用する場合）
+# オプション2: OAuth 1.0a 認証情報（ユーザーコンテキスト認証）
+# この方法を使用する場合、X_USER_IDは省略可能（APIから自動取得）
 X_API_KEY=your_api_key_here
 X_API_SECRET=your_api_secret_here
 X_ACCESS_TOKEN=your_access_token_here
@@ -44,8 +50,23 @@ X_ACCESS_TOKEN_SECRET=your_access_token_secret_here
 1. [Twitter Developer Portal](https://developer.twitter.com/en/portal/dashboard) にアクセス
 2. プロジェクトとアプリを作成
 3. "Keys and tokens" タブから以下を取得：
-   - **Bearer Token** (推奨): v2 API専用のトークン
-   - または **API Key & Secret** + **Access Token & Secret**: OAuth 1.0a認証
+
+**オプション1: Bearer Token（推奨 - シンプルな設定）**
+- Bearer Tokenを取得してコピー
+- **重要**: 自分のTwitterユーザーIDも取得してください
+  - [TweeterID.com](https://tweeterid.com/) にアクセス
+  - あなたのTwitterユーザー名（@なし）を入力
+  - 表示されたUser IDをコピーして `X_USER_ID` に設定
+
+**オプション2: OAuth 1.0a（自動ユーザーID取得）**
+- API Key & Secret を取得
+- Access Token & Secret を生成
+- この方法では `X_USER_ID` は省略可能（APIから自動取得されます）
+
+#### 認証方式の選択
+
+- **Bearer Tokenのみ**: シンプルですが `X_USER_ID` の手動設定が必要
+- **OAuth 1.0a**: 少し複雑ですが `X_USER_ID` を自動取得可能
 
 ### 3. データベースの初期化
 
