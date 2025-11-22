@@ -9,3 +9,6 @@ google-cloud-aiplatform>=1.38.0
 
 # 環境変数管理
 python-dotenv>=1.0.0
+
+# YAML設定ファイル読み込み
+pyyaml>=6.0
