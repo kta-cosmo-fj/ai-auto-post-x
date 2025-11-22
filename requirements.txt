@@ -9,3 +9,7 @@ google-cloud-aiplatform>=1.38.0
 
 # 環境変数管理
 python-dotenv>=1.0.0
+
+# RAG Knowledge Base
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
