@@ -67,3 +67,10 @@ htmlcov/
 assets/backgrounds/*.jpg
 assets/backgrounds/*.png
 /temp_images/
+
+# Data files
+data/*.db
+data/*.json
+
+# Reports
+reports/
