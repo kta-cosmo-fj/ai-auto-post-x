@@ -67,3 +67,14 @@ htmlcov/
 assets/backgrounds/*.jpg
 assets/backgrounds/*.png
 /temp_images/
+
+# Database files
+data/*.db
+data/*.db-journal
+# Knowledge Base / RAG
+data/chroma_db/
+.chroma/
+
+# Sentence Transformers cache
+~/.cache/torch/
+~/.cache/huggingface/

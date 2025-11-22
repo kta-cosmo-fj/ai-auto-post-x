@@ -4,3 +4,4 @@
 from .character_manager import Character, CharacterManager
 
 __all__ = ["Character", "CharacterManager"]
+"""AI Auto Post X - Modules Package"""
