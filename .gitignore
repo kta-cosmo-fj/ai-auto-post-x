@@ -68,6 +68,12 @@ assets/backgrounds/*.jpg
 assets/backgrounds/*.png
 /temp_images/
 
+# Data files
+data/*.db
+data/*.json
+
+# Reports
+reports/
 # Database files
 data/*.db
 data/*.db-journal
